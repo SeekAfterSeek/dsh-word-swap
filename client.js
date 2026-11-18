@@ -49,6 +49,13 @@ window.__ModuleLoader__.load((() => {
         '.ws-panel .notice{padding:7px 12px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);font-size:12px;color:var(--dsw-alias-label-secondary);word-break:break-all}',
         '.ws-panel .notice.err{border-color:#e5484d;color:#e5484d}',
         '.ws-panel .mono{font-family:ui-monospace,Consolas,monospace}',
+        '.ws-panel .chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;flex:1;min-width:200px}',
+        '.ws-panel .chip{display:inline-flex;align-items:center;gap:5px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:999px;padding:3px 6px 3px 10px;font-size:12px;line-height:1.5}',
+        '.ws-panel .chip button{border:0;background:transparent;padding:0 2px;font-size:13px;line-height:1;cursor:pointer;color:var(--dsw-alias-label-secondary);border-radius:999px}',
+        '.ws-panel .chip button:hover{color:#e5484d}',
+        '.ws-panel .seg{display:inline-flex;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;overflow:hidden;flex:none}',
+        '.ws-panel .seg button{border:0;border-radius:0;background:transparent;padding:4px 10px;font-size:12px}',
+        '.ws-panel .seg button.on{background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-foreground)}',
       ].join('\n')
 
       /** 装一次面板样式。 */
@@ -102,8 +109,9 @@ window.__ModuleLoader__.load((() => {
           matchAllWorkspaces: config.matchAllWorkspaces === true,
           workspaces: [...(config.workspaces ?? [])],
           rules: (config.rules ?? []).map(rule => ({
-            from: splitWords((rule.from ?? []).join(',')),
+            from: (rule.from ?? []).map(word => String(word ?? '')).filter(word => word.length > 0),
             to: String(rule.to ?? ''),
+            mode: rule.mode === 'all' ? 'all' : 'any',
           })),
         }
       }
@@ -116,8 +124,36 @@ window.__ModuleLoader__.load((() => {
           matchAllWorkspaces: draft.matchAllWorkspaces,
           workspaces: draft.workspaces,
           rules: draft.rules
-            .map(rule => ({ from: rule.from, to: rule.to.trim() }))
+            .map(rule => ({ from: rule.from, to: rule.to.trim(), mode: rule.mode === 'all' ? 'all' : 'any' }))
             .filter(rule => rule.to.length > 0 && rule.from.length > 0),
+        }
+      }
+
+      /**
+       * 渲染兜底：面板内部抛错时把错误显示出来，而不是留一片空白。
+       */
+      class PanelBoundary extends React.Component {
+        constructor(props) {
+          super(props)
+          this.state = { error: null }
+        }
+
+        static getDerivedStateFromError(error) {
+          return { error }
+        }
+
+        render() {
+          if (this.state.error !== null) {
+            const error = this.state.error
+            return h('div', { className: 'ws-panel' },
+              h('div', { className: 'notice err' }, `面板渲染出错：${String(error && error.message ? error.message : error)}`),
+              h('pre', {
+                className: 'mono',
+                style: { fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 },
+              }, String(error && error.stack ? error.stack : '')),
+            )
+          }
+          return this.props.children
         }
       }
 
@@ -130,6 +166,98 @@ window.__ModuleLoader__.load((() => {
           }),
           h('span', null, props.label),
           props.hint === undefined ? null : h('span', { className: 'hint' }, props.hint),
+        )
+      }
+
+      /** 一条映射规则的编辑器：词标签 + 目标词 + 触发关系。 */
+      function RuleCard(props) {
+        const rule = props.rule
+        const [entry, setEntry] = React.useState('')
+        const words = Array.isArray(rule.from) ? rule.from : []
+
+        const addWords = (raw) => {
+          const incoming = String(raw)
+            .split(/[\r\n\t]+/)
+            .map(word => word.trim())
+            .filter(word => word.length > 0)
+          if (incoming.length === 0) return
+          // 保序去重：已有词保留原位置，新词按粘贴顺序追加
+          const base = [...(Array.isArray(rule.from) ? rule.from : [])]
+          for (const word of incoming) if (!base.includes(word)) base.push(word)
+          props.onChange({ from: base })
+        }
+        const addWord = () => {
+          const word = entry.trim()
+          if (word === '') return
+          setEntry('')
+          if (words.includes(word)) return
+          props.onChange({ from: [...words, word] })
+        }
+        const removeWord = (word) => props.onChange({ from: words.filter(item => item !== word) })
+
+        const chips = words.map(word => h('span', { className: 'chip', key: word },
+          h('span', null, word),
+          h('button', { title: '删掉这个词', onClick: () => removeWord(word) }, '×'),
+        ))
+
+        return h('div', { className: 'rule' },
+          h('div', { className: 'line' },
+            h('span', { className: 'label' }, '我会写'),
+            h('div', { className: 'chips' },
+              chips.length === 0 ? h('span', { className: 'hint' }, '还没有词') : chips,
+              h('input', {
+                type: 'text',
+                placeholder: '输入一个词，回车添加（可多行粘贴）',
+                style: { width: 190 },
+                value: entry,
+                onChange: event => setEntry(event.target.value),
+                onKeyDown: event => {
+                  if (event.key !== 'Enter') return
+                  event.preventDefault()
+                  addWord()
+                },
+                onPaste: event => {
+                  const clipboard = event.clipboardData
+                  const text = clipboard === null || clipboard === undefined
+                    ? ''
+                    : String(clipboard.getData('text') ?? '')
+                  if (!/[\r\n\t]/.test(text)) return
+                  // 多行粘贴：按回车/制表符一次拆成多个标签
+                  event.preventDefault()
+                  addWords(entry === '' ? text : entry + '\n' + text)
+                  setEntry('')
+                },
+              }),
+              h('button', { onClick: addWord }, '添加'),
+            ),
+          ),
+          h('div', { className: 'line' },
+            h('span', { className: 'label' }, '模型看'),
+            h('input', {
+              type: 'text',
+              placeholder: '水果',
+              value: rule.to,
+              onChange: event => props.onChange({ to: event.target.value }),
+            }),
+          ),
+          h('div', { className: 'line' },
+            h('span', { className: 'label' }, '触发'),
+            h('div', { className: 'seg' },
+              h('button', {
+                className: rule.mode === 'all' ? '' : 'on',
+                onClick: () => props.onChange({ mode: 'any' }),
+              }, '任一词出现'),
+              h('button', {
+                className: rule.mode === 'all' ? 'on' : '',
+                onClick: () => props.onChange({ mode: 'all' }),
+              }, '同时出现'),
+            ),
+            h('span', { className: 'hint' },
+              rule.mode === 'all'
+                ? `这 ${words.length} 个词全部出现在同一句里才替换成「${rule.to || '目标词'}」`
+                : `任意一个词命中就替换成「${rule.to || '目标词'}」`),
+            h('button', { style: { marginLeft: 'auto', flex: 'none' }, onClick: props.onRemove }, '删除这条'),
+          ),
         )
       }
 
@@ -185,7 +313,7 @@ window.__ModuleLoader__.load((() => {
           patch({ rules })
         }
         const removeRule = (index) => patch({ rules: draft.rules.filter((_, at) => at !== index) })
-        const addRule = () => patch({ rules: [...draft.rules, { from: [], to: '' }] })
+        const addRule = () => patch({ rules: [...draft.rules, { from: [], to: '', mode: 'any' }] })
 
         const save = async () => {
           setBusy(true)
@@ -203,7 +331,10 @@ window.__ModuleLoader__.load((() => {
           }
         }
 
-        const refreshWorkspaces = React.useCallback(async () => {
+        // 注意：这个函数故意不用 useCallback —— 它原来写在下面两处 early return
+        // 之后，导致首次渲染 13 个 hook、第二次渲染 14 个 hook，React 直接抛
+        // Minified React error #310（Rendered more hooks than during the previous render）。
+        async function refreshWorkspaces() {
           setWsBusy(true)
           setError('')
           try {
@@ -216,7 +347,7 @@ window.__ModuleLoader__.load((() => {
           } finally {
             setWsBusy(false)
           }
-        }, [])
+        }
 
         const runPreview = async () => {
           setPreview(null)
@@ -231,21 +362,23 @@ window.__ModuleLoader__.load((() => {
         const workspaceRows = workspaces.length === 0
           ? h('div', { className: 'hint' }, '没有发现可用的工作区，直接在下面手填路径。')
           : workspaces.map(entry => {
-            const on = draft.workspaces.some(item => item.toLowerCase() === entry.path.toLowerCase())
-            return h('label', { className: 'ws-item', key: entry.path },
+            const path = String(entry && entry.path ? entry.path : '')
+            const on = draft.workspaces.some(item => item.toLowerCase() === path.toLowerCase())
+            return h('label', { className: 'ws-item', key: path === '' ? `empty-${Math.random()}` : path },
               h('input', {
                 type: 'checkbox',
                 checked: on,
-                onChange: () => toggleWorkspace(entry.path),
+                onChange: () => toggleWorkspace(path),
               }),
-              h('span', { className: 'path' }, entry.path),
-              entry.source === 'config' ? h('span', { className: 'tag' }, '配置') : null,
-              entry.source === 'default' ? h('span', { className: 'tag' }, '默认') : null,
-              entry.source === 'workspace' ? h('span', { className: 'tag' }, '工作区') : null,
+              h('span', { className: 'path' }, path),
+              entry && entry.source === 'config' ? h('span', { className: 'tag' }, '配置') : null,
+              entry && entry.source === 'default' ? h('span', { className: 'tag' }, '默认') : null,
+              entry && entry.source === 'workspace' ? h('span', { className: 'tag' }, '工作区') : null,
             )
           })
 
         return h('div', { className: 'ws-panel' },
+          h('div', { className: 'hint' }, 'dsh-word-swap 面板 v0.2.0 已加载'),
           h('div', { className: 'sec' },
             h('div', { className: 'sec-title' }, '总开关'),
             h(Toggle, {
@@ -309,28 +442,13 @@ window.__ModuleLoader__.load((() => {
 
           h('div', { className: 'sec' },
             h('div', { className: 'sec-title' }, '词汇映射'),
-            h('div', { className: 'hint' }, '左边是你会写的词（可以多个，用逗号分隔），右边是给模型看的词；输出时按你当次写过的词还原。'),
-            draft.rules.map((rule, index) => h('div', { className: 'rule', key: index },
-              h('div', { className: 'line' },
-                h('span', { className: 'label' }, '我会写'),
-                h('input', {
-                  type: 'text',
-                  placeholder: '葡萄,柚子,香蕉,苹果',
-                  value: rule.from.join(','),
-                  onChange: event => updateRule(index, { from: splitWords(event.target.value) }),
-                }),
-              ),
-              h('div', { className: 'line' },
-                h('span', { className: 'label' }, '模型看'),
-                h('input', {
-                  type: 'text',
-                  placeholder: '水果',
-                  value: rule.to,
-                  onChange: event => updateRule(index, { to: event.target.value }),
-                }),
-                h('button', { onClick: () => removeRule(index) }, '删除'),
-              ),
-            )),
+            h('div', { className: 'hint' }, '每条规则：左边一堆词（一个词一个标签），右边是给模型看的词。「任一词出现」＝任意一个命中就替换；「同时出现」＝这堆词全部出现在同一句里才替换。输出时按你当次写过的词还原。'),
+            draft.rules.map((rule, index) => h(RuleCard, {
+              key: index,
+              rule,
+              onChange: next => updateRule(index, next),
+              onRemove: () => removeRule(index),
+            })),
             h('div', { className: 'row' },
               h('button', { onClick: addRule }, '＋ 新增一条映射'),
             ),
@@ -373,11 +491,11 @@ window.__ModuleLoader__.load((() => {
         if (slots === undefined) return
         slots.inject('settings.section', () => slots.register(
           { name: 'settings.section', id: 'word-swap', order: 26, label: '词汇映射' },
-          () => React.createElement(WordSwapPanel),
+          () => h(PanelBoundary, null, h(WordSwapPanel)),
         ))
         slots.inject('plugins.bundle.config', () => slots.register(
           { name: 'plugins.bundle.config', key: 'dsh-word-swap' },
-          () => React.createElement(WordSwapPanel),
+          () => h(PanelBoundary, null, h(WordSwapPanel)),
         ))
       }
 
