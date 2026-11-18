@@ -1,0 +1,8 @@
+# dsh-word-swap bundle patch
+#
+# 装一个 host 半边的词汇映射服务 + 一个客户端设置页（settings.section「词汇映射」）。
+# 不改宿主任何文件：输入走 agent/pre-step，输出走 llm/stream。
+
+- insert:
+    - id: dsh-word-swap
+      name: 'dsh-word-swap'

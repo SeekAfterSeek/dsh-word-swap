@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Word Swap",
+    "description": "Rewrite your input into model-facing words per workspace, and restore the model's target words back to what you actually typed."
+  }
+}

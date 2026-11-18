@@ -1,0 +1,49 @@
+{
+  "name": "dsh-word-swap",
+  "version": "0.1.0",
+  "description": "DSH 词汇映射插件：按工作区把用户输入改写成给模型看的词，并按当次输入还原模型输出里的目标词。",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SeekAfterSeek/dsh-word-swap.git"
+  },
+  "homepage": "https://github.com/SeekAfterSeek/dsh-word-swap",
+  "bugs": {
+    "url": "https://github.com/SeekAfterSeek/dsh-word-swap/issues"
+  },
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "docs/",
+    "locale/"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "word-swap"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}
