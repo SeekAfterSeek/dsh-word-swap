@@ -75,16 +75,17 @@ plugin_manager install_bundle  target = file:/path/to/dsh-word-swap
 
 ## 实现要点
 
-- 输入侧挂 `agent/pre-step` 瀑布：`await next()` 后改写 `decision.messages` 里的 text 块；按消息 id 去重，避免多 step 重复记录。
+- 输入侧挂在 `llm/stream` 里做**请求层改写**：克隆一份 `GenerateOptions`，把其中 user 消息的 text 块换成目标词，再用 `WeakSet` 标记这份克隆、把请求重新送进 `llm.stream()`（重入时直接 `next()` 放行）。
+  不改 `agent/pre-step` 是故意的：agent-loop 会把 `decision.messages` 追加进会话（`dsh-agent-loop/lib/index.js:892`），那样用户自己的聊天框里就会显示被替换后的词。改成请求层改写后，会话里存的始终是用户原文，聊天框显示原文，只有发给模型的请求被换掉。
 - 输出侧挂 `llm/stream` 瀑布：包一层异步迭代器，`text-delta` 进缓冲，`block-end` 补发尾巴并回写完整文本；跨分片断词用 `maxOutLen - 1` 的长度留尾规避。
-- 会话级映射记录 `Map<sessionId, {record, seen}>`，`record` 是 `目标词 → { sources: 原词序列, last }`。
+- 会话级映射记录 `Map<sessionId, {record, seen}>`，`record` 是 `目标词 → { sources: 原词序列, last }`；请求改写时取最后一条带命中的用户消息刷新它，没有命中就沿用上一轮（跨轮粘住）。
 - 过滤：`options.purpose !== undefined`（标题生成等辅助请求）直接放行，不参与改写。
 
 ## 目录
 
 ```
 dsh-word-swap/
-├── index.js            host 半边：pre-step 改写 + llm/stream 还原 + HTTP 接口
+├── index.js            host 半边：请求层改写 + llm/stream 还原 + HTTP 接口
 ├── client.js           客户端半边：设置 → 词汇映射 面板
 ├── cordis.patch.yml    插件行声明
 ├── package.json        dsh.bundle / dsh.client 清单

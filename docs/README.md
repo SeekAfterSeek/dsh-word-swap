@@ -58,7 +58,8 @@ plugin_manager install_bundle  target = file:/path/to/dsh-word-swap
 
 ## 实现要点
 
-- 输入侧挂 `agent/pre-step`（waterfall）：`await next()` 后改写 `decision.messages` 里的 text 块，按消息 id 去重，避免后续 step 重复记录。
+- 输入侧在 `llm/stream` 里做请求层改写：克隆 `GenerateOptions`，只把 user 消息的 text 块换成目标词，`REENTER`（WeakSet）标记克隆对象后调用 `llm.stream(clone)` 重发；重入时立即 `next()`。
+  为什么不挂 `agent/pre-step`：agent-loop 会把 `decision.messages` 追加进会话（`dsh-agent-loop/lib/index.js:892`），改写结果会落进会话，用户自己的聊天框里就会看到被替换的词。请求层改写不动会话，聊天框永远是用户原文。
 - 输出侧挂 `llm/stream`（waterfall）：包一层异步迭代器，`text-delta` 进 per-block 缓冲，`safe = buffer.length - (maxOutLen - 1)` 留住尾巴防止跨分片把词切断；`block-end` 补发尾巴并把 `block.text` 换成还原后的全文。`options.purpose !== undefined` 的辅助调用（标题生成等）原样放过。
 - 会话记录 `Map<sessionId, { record: Map<target,{sources,last}>, seen }>`，最多 64 个会话。
 - 多来源（一个 `to` 对应多个 `from`）走动态还原：本轮第 k 次出现 → `sources[k]`；来源唯一时是静态替换。用户自己直接写目标词时，记一条「来源即本身」，原样还回去。

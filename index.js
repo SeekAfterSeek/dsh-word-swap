@@ -2,11 +2,11 @@
  * dsh-word-swap — 词汇映射（Host 半边）。
  *
  * 两件事，全部在运行时做，不改宿主任何文件：
- *  1) 输入侧：Event `agent/pre-step`（waterfall）。把这一步要送进模型的用户消息
- *     按规则改写成「给模型看的词」，并记下这一轮每个目标词实际来自哪些原始词、
- *     按出现顺序排列。
- *  2) 输出侧：Event `llm/stream`（waterfall）。模型吐出的文本里出现目标词时，
- *     按上一步的记录逆序还原成用户当次真正写下的词（超出记录次数就粘最后一个）。
+ *  1) 输入侧：Event `llm/stream`（waterfall）。克隆一份请求、把其中 user 消息的
+ *     文本换成「给模型看的词」再发出去；会话里存的仍是用户原文，聊天框不受影响。
+ *     同时记下这一轮每个目标词实际来自哪些原始词、按出现顺序排列。
+ *  2) 输出侧：同一个 `llm/stream`。模型吐出的文本里出现目标词时，按记录逆序还原
+ *     成用户当次真正写下的词（超出记录次数就粘最后一个）。
  *
  * 作用范围按工作区（会话的工作目录）过滤：配置里的 workspaces 为空表示所有工作区。
  * 配置存 $DSH_HOME/dsh-word-swap/config.json，mtime 变了就热读，不用重启；
@@ -319,6 +319,49 @@ function applyHits(state, hits) {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 请求层改写：会话里存原文，只把「送给模型的那一份」换掉
+// ---------------------------------------------------------------------------
+
+/** 已被本插件克隆并重发的请求对象，用于跳出 llm/stream 的重入。 */
+const REENTER = new WeakSet()
+
+/**
+ * 克隆一份请求，把其中 user 消息的文本按规则改写。
+ * 只记录最后一条带命中的用户消息，作为输出侧逆映射的依据。
+ * @param options - 原始 GenerateOptions（深冻结，不可改）。
+ * @param model - 编译后的规则。
+ * @returns 改写后的 messages、是否变化、以及本轮命中。
+ */
+function rewriteRequest(options, model) {
+  const messages = []
+  let changed = false
+  let hits = []
+  for (const message of options.messages) {
+    if (message?.role !== 'user' || !Array.isArray(message.content)) {
+      messages.push(message)
+      continue
+    }
+    const local = []
+    let touched = false
+    const content = message.content.map(part => {
+      if (part?.type !== 'text' || typeof part.text !== 'string') return part
+      const text = rewriteInput(part.text, model, local)
+      if (text === part.text) return part
+      touched = true
+      return { ...part, text }
+    })
+    if (local.length > 0) hits = local
+    if (touched) {
+      changed = true
+      messages.push({ ...message, content })
+    } else {
+      messages.push(message)
+    }
+  }
+  return { messages, changed, hits }
+}
+
 // 插件本体
 // ---------------------------------------------------------------------------
 
@@ -327,53 +370,39 @@ function applyHits(state, hits) {
  * @param ctx - 插件上下文。
  */
 export function apply(ctx) {
-  // ---- 输入侧 ----
-  ctx.on('agent/pre-step', async (payload, next) => {
-    const config = loadConfig()
-    if (!config.enabled) return next()
-    const decision = await next()
-    if (decision.kind !== 'enter') return decision
-    const session = payload.agent?.session
-    if (!matchesWorkspace(config, cwdOfSession(ctx, session))) return decision
-    const model = buildModel(config)
-    if (model.inputList.length === 0) return decision
-    const state = stateOf(session?.id)
-    let changed = false
-    const messages = decision.messages.map(message => {
-      // 同一条消息可能在后续 step 里再次被送进来，只改一次，避免记录被重复累加
-      if (state.seen.includes(message.id)) return message
-      state.seen.push(message.id)
-      if (state.seen.length > 400) state.seen.splice(0, state.seen.length - 400)
-      const hits = []
-      let touched = false
-      const content = message.content.map(part => {
-        if (part?.type !== 'text' || typeof part.text !== 'string') return part
-        const text = rewriteInput(part.text, model, hits)
-        if (text === part.text) return part
-        touched = true
-        return { ...part, text }
-      })
-      if (hits.length > 0) applyHits(state, hits)
-      if (!touched) return message
-      changed = true
-      return { ...message, content }
-    })
-    return changed ? { ...decision, messages } : decision
-  }, { prepend: true })
-
+  // ---- 输入侧：请求层改写 ----
+  // 不能挂在 agent/pre-step 上：agent-loop 会把 decision.messages 追加进会话
+  // （dsh-agent-loop/lib/index.js:892 session.append("user/message", message)），
+  // 用户在聊天框里就会看到被替换后的词。这里改成克隆请求再重发。
   // ---- 输出侧 ----
-  ctx.on('llm/stream', (options, next) => {
+
+  ctx.on('llm/stream', function (options, next) {
     const config = loadConfig()
-    if (!config.outputEnabled) return next()
     // 只处理主对话请求：标题生成之类的辅助调用原样放过
     if (options.purpose !== undefined) return next()
-    const source = next()
-    const model = buildModel(config)
-    if (model.outputList.length === 0) return source
+    if (REENTER.has(options)) return next()
     const session = options.sessionId === undefined ? undefined : ctx.sessions.get(options.sessionId)
-    if (session !== undefined && !matchesWorkspace(config, cwdOfSession(ctx, session))) return source
-    const state = stateOf(session?.id ?? options.sessionId)
-    return wrapStream(source, model, state.record)
+    if (session !== undefined && !matchesWorkspace(config, cwdOfSession(ctx, session))) return next()
+    const key = session?.id ?? options.sessionId
+    const model = buildModel(config)
+    let source = null
+
+    if (config.enabled && model.inputList.length > 0) {
+      const plan = rewriteRequest(options, model)
+      if (plan.hits.length > 0) applyHits(stateOf(key), plan.hits)
+      if (plan.changed) {
+        const llm = this?.stream !== undefined ? this : (ctx.llm ?? ctx.get('llm'))
+        if (llm?.stream !== undefined) {
+          const rewritten = { ...options, messages: plan.messages }
+          REENTER.add(rewritten)
+          source = llm.stream(rewritten)
+        }
+      }
+    }
+
+    if (source === null) source = next()
+    if (!config.outputEnabled || model.outputList.length === 0) return source
+    return wrapStream(source, model, stateOf(key).record)
   })
 
   // ---- HTTP：设置界面用 ----
