@@ -59,6 +59,7 @@ plugin_manager install_bundle  target = file:/path/to/dsh-word-swap
 | `workspaces` | 生效的工作区路径数组；只写目录名（不含分隔符）按末段名匹配，大小写不敏感 |
 | `rules[].from` | 会被替换掉的词，字符串或字符串数组 |
 | `rules[].to` | 给模型看的词 |
+| `rules[].mode` | 触发关系：`any`（默认，任一词出现即替换）/ `all`（词群全部出现在同一句才替换） |
 
 配置按文件 mtime 热读，改完不用重启。
 

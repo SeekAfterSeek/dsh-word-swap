@@ -44,6 +44,7 @@ plugin_manager install_bundle  target = file:/path/to/dsh-word-swap
 
 - `rules[].from`：字符串或字符串数组，多个词映射到同一个 `to`。
 - `rules[].to`：给模型看的词，同时是输出侧要还原的目标词。
+- `rules[].mode`：触发关系。`any`（默认）任一词出现就替换；`all` 要求词群里的词全部出现在同一句里才替换。
 - `workspaces` 为空 = 对所有工作区生效；只写目录名（不含分隔符）按末段匹配。
 - `matchAllWorkspaces: true` 时忽略 `workspaces`。
 

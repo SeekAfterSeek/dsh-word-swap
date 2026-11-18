@@ -99,7 +99,7 @@ function normalizeConfig(raw) {
       .map(value => String(value ?? '').trim())
       .filter(value => value.length > 0 && value !== to))]
     if (from.length === 0) continue
-    rules.push({ from, to })
+    rules.push({ from, to, mode: rule.mode === 'all' ? 'all' : 'any' })
   }
   return {
     enabled: source.enabled !== false,
@@ -122,13 +122,14 @@ function normalizeConfig(raw) {
  * @returns 两个按长度降序的匹配表。
  */
 function buildModel(config) {
-  /** @type {{ pat: string, to: string }[]} */
+  /** @type {{ pat: string, to: string, mode: 'any' | 'all', words: string[] }[]} */
   const inputList = []
   /** @type {{ pat: string, target: string, repl: string | null }[]} */
   const outputList = []
   for (const rule of config.rules) {
+    const mode = rule.mode === 'all' ? 'all' : 'any'
     // 同一个 to 可能被多条规则指向；输出侧合并来源，按规则顺序保留
-    for (const from of rule.from) inputList.push({ pat: from, to: rule.to })
+    for (const from of rule.from) inputList.push({ pat: from, to: rule.to, mode, words: rule.from })
     const existing = outputList.find(entry => entry.pat === rule.to)
     if (existing !== undefined) continue
     outputList.push({
@@ -153,11 +154,15 @@ function buildModel(config) {
  * @returns 改写后的文本。
  */
 function rewriteInput(text, model, hits) {
+  // mode === 'all' 的规则要求词群里的词全部出现才生效（同一句里同时出现）；
+  // mode === 'any'（默认）只要任一命中就替换。
+  const active = model.inputList.filter(entry => entry.mode !== 'all'
+    || entry.words.every(word => text.includes(word)))
   let out = ''
   let index = 0
   while (index < text.length) {
     let matched = null
-    for (const entry of model.inputList) {
+    for (const entry of active) {
       if (text.startsWith(entry.pat, index)) {
         matched = entry
         break
